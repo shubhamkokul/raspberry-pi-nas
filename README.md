@@ -174,14 +174,35 @@ sudo umount /dev/<sdcard>1
 sudo mkfs.ext4 /dev/<sdcard>
 ```
 
-### 9 — Create Nextcloud Data Directory
+### 9 — Set a Static IP (Recommended)
+
+Without this, your Pi gets a new IP from DHCP on each boot, which breaks SSH and Nextcloud trusted domains.
+
+```bash
+# Check your connection name
+nmcli connection show
+
+# Set static IP — adjust to match your router's subnet
+sudo nmcli connection modify "Wired connection 1" \
+  ipv4.method manual \
+  ipv4.addresses 192.168.1.100/24 \
+  ipv4.gateway 192.168.1.1 \
+  ipv4.dns "8.8.8.8 1.1.1.1"
+
+sudo nmcli connection up "Wired connection 1"
+ip addr show   # verify your static IP is assigned
+```
+
+Pick an IP outside your router's DHCP range (usually `.100`–`.254` is safe — check your router settings).
+
+### 10 — Create Nextcloud Data Directory
 
 ```bash
 sudo mkdir -p /ncdata
 sudo chown -R $USER:$USER /ncdata
 ```
 
-### 10 — Create docker-compose.yml
+### 11 — Create docker-compose.yml
 
 ```bash
 mkdir ~/nextcloud && cd ~/nextcloud
@@ -227,7 +248,7 @@ Validate:
 docker compose config   # should show /ncdata as bind source
 ```
 
-### 11 — Start Nextcloud
+### 12 — Start Nextcloud
 
 ```bash
 docker compose up -d
@@ -236,7 +257,7 @@ docker ps   # both containers should show Up
 
 Access at `http://<pi-local-ip>:8080` to complete setup. Create admin account.
 
-### 12 — Install Tailscale on Pi
+### 13 — Install Tailscale on Pi
 
 ```bash
 curl -fsSL https://tailscale.com/install.sh | sh
@@ -249,7 +270,7 @@ Add Tailscale IP to Nextcloud trusted domains:
 docker exec --user www-data nextcloud-nextcloud-1 php occ config:system:set trusted_domains 2 --value=<tailscale-ip>
 ```
 
-### 13 — Enable HTTPS via Tailscale Serve
+### 14 — Enable HTTPS via Tailscale Serve
 
 **Why**: iOS blocks plain HTTP. Tailscale Serve adds HTTPS with a valid Let's Encrypt cert — no Caddy or nginx needed.
 
@@ -353,3 +374,42 @@ sudo shutdown -h now
 **NVMe not detected**
 - Pi 5 has PCIe enabled by default — no config.txt changes needed
 - Check HAT is seated properly on the PCIe FFC connector
+
+**NVMe boots but no network / SSH times out**
+- Root cause: NVMe was cloned from SD before WiFi was configured. SD got WiFi config later; NVMe never had it.
+- Fix: boot from SD, mount NVMe, copy netplan files:
+```bash
+sudo mount /dev/nvme0n1p2 /mnt
+sudo mkdir -p /mnt/etc/netplan
+sudo cp /etc/netplan/*.yaml /mnt/etc/netplan/
+sudo chmod 600 /mnt/etc/netplan/*.yaml
+sudo umount /mnt
+```
+- Change boot order back to NVMe, reboot.
+
+**SSH host key warning after reboot ("WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED")**
+- Expected after reinstalling OS or regenerating SSH keys. Clear the old key:
+```bash
+ssh-keygen -R <pi-ip-or-hostname>
+ssh <user>@<pi-ip>
+```
+
+**SSH corruption after hard shutdown (ssh_host files broken)**
+- Boot from SD card, mount NVMe, regenerate SSH keys via chroot:
+```bash
+sudo mount /dev/nvme0n1p2 /mnt
+sudo mount --bind /proc /mnt/proc
+sudo mount --bind /sys /mnt/sys
+sudo mount --bind /dev /mnt/dev
+sudo chroot /mnt
+rm /etc/ssh/ssh_host_*
+ssh-keygen -A
+exit
+sudo fsck -f /dev/nvme0n1p2   # fix any filesystem corruption
+```
+- Reboot from NVMe.
+
+**EEPROM flash stuck / bootloader issues**
+- Flash a fresh bootloader image via Raspberry Pi Imager: Misc utility images → Bootloader → SD Card Boot
+- Boot from that SD card to reset the EEPROM
+- Then re-flash OS SD and start again
